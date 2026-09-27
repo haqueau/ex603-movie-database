@@ -8,6 +8,24 @@ has the form it does.
 
 ---
 
+## What changed from the Unit 1 design
+
+Implementing the design in PostgreSQL forced or prompted the changes below.
+The ERD (`schema/erd.png`) has been updated to match.
+
+| Change | Unit 1 | Unit 2 | Why |
+|---|---|---|---|
+| `ratings.score` type | `TINYINT` | `SMALLINT` | PostgreSQL has no `TINYINT`; the script failed until this changed. `SMALLINT` is the smallest integer type available, and `chk_ratings_score` still bounds it to 1–5. The course default for scores, `NUMERIC(3,2)`, was rejected because it admits fractions and this platform rates in whole stars. |
+| `titles.runtime_min` type | `SMALLINT` | `INTEGER` | The course type mapping specifies `INTEGER` for durations. |
+| `users.email` length | `VARCHAR(255)` | `VARCHAR(254)` | 254 characters is the real maximum length of an email address; 255 was an arbitrary default. |
+| `genres.parent_genre_id` | absent | added, with `fk_genres_parent` and `chk_genres_no_self_parent` | The Unit 1 diagram had no recursive relationship. Genres form a natural hierarchy (Romantic Comedy under Comedy), making this the one relation in the theme where a self-reference models something real. |
+| `CHECK` constraint names | `ck_` prefix | `chk_` prefix | Aligns with the course naming convention (`pk_`, `uq_`, `chk_`, `fk_`). |
+| Defaults | none | `joined_at DEFAULT CURRENT_DATE`, `rated_at DEFAULT CURRENT_TIMESTAMP` | Both record when a row was created, so the database can supply them rather than every insert. |
+
+No table, key or relationship from Unit 1 was removed.
+
+---
+
 ## The constraints table
 
 | Foreign key | `ON DELETE` | Reason |
