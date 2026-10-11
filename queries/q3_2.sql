@@ -14,6 +14,10 @@
 --  A3 22 (not spam) + 12 (spam) = 34, but the table holds 200.
 --     The 166 NULL rows were dropped silently.
 --  A4 Repaired query returns 188 (= 200 - 12 spam).
+--  A5 Broken filter credits only 12 of 30 reviewers; repaired
+--     filter credits all 30. 20 reviewers have no spam
+--     withdrawals, 10 have at least one. User_13: 0 eligible
+--     ratings under the broken filter, 11 when repaired.
 --  B1 ERROR: column "score_band" does not exist
 --  B2 and B3 both return the same 54 'Loved it' ratings.
 -- ============================================================
@@ -74,6 +78,39 @@ SELECT COUNT(*) AS not_spam_fixed
 FROM   ratings
 WHERE  withdrawn_reason <> 'Spam detected'
    OR  withdrawn_reason IS NULL;
+
+
+-- ------------------------------------------------------------
+-- A5 Impact on reviewers (supports the Task 3.4 memo)
+--    The same broken and repaired filters, counted per reviewer.
+--    First a summary, then the per-reviewer detail.
+-- ------------------------------------------------------------
+WITH per_reviewer AS (
+    SELECT u.user_id,
+           u.user_name,
+           COUNT(*) FILTER (WHERE r.withdrawn_reason <> 'Spam detected')     AS eligible_broken,
+           COUNT(*) FILTER (WHERE r.withdrawn_reason <> 'Spam detected'
+                               OR r.withdrawn_reason IS NULL)                AS eligible_fixed,
+           COUNT(*) FILTER (WHERE r.withdrawn_reason =  'Spam detected')     AS spam_withdrawals
+    FROM   users   u
+    JOIN   ratings r ON r.user_id = u.user_id
+    GROUP  BY u.user_id, u.user_name
+)
+SELECT COUNT(*) FILTER (WHERE eligible_broken  > 0) AS reviewers_credited_broken,
+       COUNT(*) FILTER (WHERE eligible_fixed   > 0) AS reviewers_credited_fixed,
+       COUNT(*) FILTER (WHERE spam_withdrawals = 0) AS reviewers_no_spam,
+       COUNT(*) FILTER (WHERE spam_withdrawals > 0) AS reviewers_with_spam
+FROM   per_reviewer;
+
+SELECT u.user_name,
+       COUNT(*) FILTER (WHERE r.withdrawn_reason <> 'Spam detected')     AS eligible_broken,
+       COUNT(*) FILTER (WHERE r.withdrawn_reason <> 'Spam detected'
+                           OR r.withdrawn_reason IS NULL)                AS eligible_fixed,
+       COUNT(*) FILTER (WHERE r.withdrawn_reason =  'Spam detected')     AS spam_withdrawals
+FROM   users   u
+JOIN   ratings r ON r.user_id = u.user_id
+GROUP  BY u.user_id, u.user_name
+ORDER  BY eligible_fixed DESC, u.user_id;
 
 
 -- ============================================================
