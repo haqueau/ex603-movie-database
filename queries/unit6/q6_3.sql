@@ -1,5 +1,8 @@
 -- ============================================================
 -- Task 6.3: Build the reporting patterns
+-- Question: Which three reviews should each movie page
+--           feature, and is the platform getting better or
+--           worse month over month?
 -- Theme 2: Movie / TV
 -- Database: ex603_data (loaded from the provided movies.sql)
 -- Run with: psql -d ex603_data -P pager=off -e -f q6_3.sql

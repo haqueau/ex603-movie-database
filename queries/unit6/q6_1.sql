@@ -1,5 +1,8 @@
 -- ============================================================
 -- Task 6.1: Compute across a window without collapsing
+-- Question: Is a rating unusual for its own movie, and how
+--           should movies be ranked and grouped by how often
+--           they are rated?
 -- Theme 2: Movie / TV
 -- Database: ex603_data (loaded from the provided movies.sql)
 -- Run with: psql -d ex603_data -P pager=off -e -f q6_1.sql

@@ -1,5 +1,8 @@
 -- ============================================================
 -- Task 6.2: Compare each row to its neighbors
+-- Question: Is a movie's score rising or falling, is the
+--           platform's failure rate improving over the year,
+--           and when did a movie stop receiving ratings?
 -- Theme 2: Movie / TV
 -- Database: ex603_data (loaded from the provided movies.sql)
 -- Run with: psql -d ex603_data -P pager=off -e -f q6_2.sql
