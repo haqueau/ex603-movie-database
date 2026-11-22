@@ -1,180 +1,368 @@
-# ex603-movie-database
-**Author:** Auyon Haque  
-**Theme:** 2 — Movie / TV
+# Movie Ratings Platform: SQL Analytics Portfolio
 
-A relational database that records users, movies, and the ratings users give
-to movies, with genres inside a catalog.
+**Author:** Auyon Haque · **Course:** EX 603 · **Theme:** 2 — Movie / TV
 
-## Entity roles
+A PostgreSQL analysis of a movie-streaming platform's rating data that found
+why a dashboard's failure rate was wrong, which titles drive the real problem,
+and whether the platform is getting better, ending in four actions for the
+next quarter.
 
-| Role | Table | Notes |
+> 🎥 **Video walkthrough:** [Watch on Google Drive](https://drive.google.com/file/d/1OP1Wh8D8b1Lem8Af5QM9u3G7T0CVoc4X/view?usp=sharing)
+
+---
+
+## 1. The domain
+
+The platform is a streaming service where **users** watch **movies** and leave
+**ratings**: a score from 0 to 5, plus how many minutes they watched. Ratings
+appear on each movie's page and feed its average score, so their quality
+matters to viewers deciding what to watch, to recommendations, and to the
+reviewers who are paid for qualifying ratings.
+
+Not every rating survives. Moderators can **withdraw** a rating (for spam,
+policy violations, duplicates, or at the user's own request) or **flag** it for
+review. The project started when leadership stopped trusting a dashboard: it
+claimed only 12 of 30 reviewers had any ratings that counted, and its failure
+rate did not match anyone's experience.
+
+Over six units the analysis worked through the questions the platform has to
+answer:
+
+- **Can the numbers be trusted?** What does the data contain, and why was the
+  dashboard wrong? *(Unit 3)*
+- **How big is the problem, and where is it?** The true failure rate by movie
+  and region, against a fair baseline. *(Unit 4)*
+- **Who is behind it, and who is missing?** Which movies fail often, which never
+  get rated, and why those need different owners. *(Unit 5)*
+- **Is it getting better or worse, and what should we do next quarter?**
+  *(Unit 6)*
+
+---
+
+## 2. Database overview
+
+All analysis runs on the reference dataset provided in Unit 3,
+[`schema/movies.sql`](schema/movies.sql): 30 users, 15 movies, 5 genres and
+200 ratings, all made in 2023. The file creates the tables, with every primary
+key, foreign key and check constraint, and loads the data.
+
+```mermaid
+erDiagram
+    users ||--o{ ratings : "writes"
+    users |o--o{ users : "invited"
+    movies ||--o{ ratings : "receives"
+    movies ||--o{ movie_genres : "is tagged"
+    genres ||--o{ movie_genres : "tags"
+    movies ||--o{ movie_languages : "is available in"
+
+    users {
+        int user_id PK
+        varchar user_name
+        date signup_date
+        varchar country
+        varchar email UK
+        int invited_by FK "nullable, self-reference"
+        boolean is_active
+    }
+    movies {
+        int movie_id PK
+        varchar title
+        date added_on
+        varchar origin_country
+        varchar imdb_code UK
+        smallint release_year
+        boolean is_available
+    }
+    ratings {
+        bigint rating_id PK
+        int user_id FK
+        int movie_id FK
+        timestamp rated_at
+        timestamp reviewed_at "nullable"
+        varchar device_country
+        decimal score "0 to 5"
+        decimal watch_minutes
+        decimal weight
+        varchar rating_status "published, flagged, withdrawn"
+        varchar withdrawn_reason "nullable"
+    }
+    genres {
+        int genre_id PK
+        varchar genre_name UK
+        varchar genre_description
+    }
+    movie_genres {
+        int movie_id PK, FK
+        int genre_id PK, FK
+        date tagged_on
+    }
+    movie_languages {
+        int movie_id PK, FK
+        char language_code PK
+    }
+```
+
+**The tables that matter for the analysis**
+
+| Table | Role | Why it matters |
 |---|---|---|
-| actor | `users` | People who watch and rate |
-| producer | `movies` | The titles being rated |
-| event | `ratings` | One row per user rating a movie |
-| catalog | `genres` | Reusable genre list |
-| junction | `movie_genres` | Resolves the many-to-many between movies and genres |
-| metric | `score` | The numeric measure carried on `ratings` |
+| `ratings` | The event (fact) table | Every question starts here. `rating_status` defines a failure (`withdrawn`), `rated_at` drives every trend, `score` is the metric, and `watch_minutes` turned out to explain the sharpest score drops. |
+| `movies` | The producer | Reports start from `movies LEFT JOIN ratings`, so titles with no ratings show as 0 instead of disappearing. |
+| `users` | The actor | Used to trace removals back to accounts, and in Unit 3 to fix who was owed a payout. |
+| `genres`, `movie_genres` | Catalog and junction | Resolve the many-to-many between movies and genres. They revealed three movies with no genre at all. |
+
+**Two facts about the data that every query has to respect**
+
+- **Withdrawn ratings keep a placeholder score of 0.5.** It is not a real
+  opinion. Counting it drags the platform's average from 3.33 down to 2.85, so
+  every score average here leaves withdrawn ratings out.
+- **`withdrawn_reason` is NULL for every rating that was not withdrawn.** A
+  filter such as `withdrawn_reason <> 'Spam detected'` silently drops all 166 of
+  them. That is the bug behind the original dashboard (Unit 3).
+
+*Before the provided dataset, I designed my own schema for this theme in Unit 2
+(films and series in one `titles` table, a genre hierarchy). That design and its
+ERD are kept for reference in [`schema/schema.sql`](schema/schema.sql) and
+[`schema/MovieERDNew.png`](schema/MovieERDNew.png), with the reasoning in
+[`schema/constraints.md`](schema/constraints.md). All queries use the Unit 3
+tables above.*
+
+---
+
+## 3. Query catalogue
+
+Every `.sql` file starts with a header naming the task it answers and the
+question it resolves, and each query inside carries its own plain-language
+question.
+
+### Unit 3: Can the numbers be trusted?
+
+| File | Query | Business question |
+|---|---|---|
+| [`q3_1.sql`](queries/unit3/q3_1.sql) | 3.1a | Which available movies were released after 2015? |
+| | 3.1b | What statuses can a rating have, and how many of each? |
+| | 3.1c | Which ratings score 4–5, and which are not normal published ratings? |
+| | 3.1d | Which ratings have no withdrawal reason, and how should a blank read? |
+| | 3.1e | Can a non-technical reader tell a real low score from a removed one? |
+| [`q3_2.sql`](queries/unit3/q3_2.sql) | Part A | Why did the dashboard count only 22 qualifying ratings and 12 reviewers? |
+| | Part B | Why can't a `SELECT` alias be used in `WHERE`, and how do we rewrite it? |
+| [`q3_3.sql`](queries/unit3/q3_3.sql) | Forms 1–3 | Which reviewers have never had a rating withdrawn as spam? (`NOT IN`, CTE, `EXCEPT`) |
+| | C1–C2 | Do the three forms really agree, and when does `NOT IN` return nothing? |
+
+### Unit 4: How big is the problem, and where?
+
+| File | Query | Business question |
+|---|---|---|
+| [`q4_1.sql`](queries/unit4/q4_1.sql) | Q1 | What does the whole platform look like: count, total, average, range? |
+| | Q2 | Which movies are rated most, and how well? |
+| | Q3 | Which movies have enough ratings for their failure rate to mean anything? |
+| | Q4 | How did each movie do in each region? |
+| [`q4_2.sql`](queries/unit4/q4_2.sql) | Part A | For each movie, how many ratings were received and how many withdrawn, in one pass? |
+| | Part B | What is each region's failure rate, and the platform total? (`ROLLUP`) |
+| | Part C | What failure rate is normal for a movie, and which are well above it? |
+
+### Unit 5: Who is behind it, and who is missing?
+
+| File | Query | Business question |
+|---|---|---|
+| [`q5_1.sql`](queries/unit5/q5_1.sql) | Q1 | Who wrote each rating, for which movie, and when? |
+| | Q2 | Which movies are tagged Comedy, and do genres explain the failures? |
+| | Q3 | Do the flagged movies' look-alikes (same country or year) fail as often? |
+| [`q5_2.sql`](queries/unit5/q5_2.sql) | Part A | Which movies does an inner join silently leave out? |
+| | Part B | Are there movies without ratings *and* ratings without a movie? |
+| | Part C | Which movies have never been rated? (`NOT EXISTS` vs `EXCEPT`) |
+| [`q5_3.sql`](queries/unit5/q5_3.sql) | Part A | Which genre tags could each movie have, and which are missing? (`CROSS JOIN`) |
+| | Part B | How does PostgreSQL execute the three-table join, and why that way? |
+
+### Unit 6: Is it getting better, and what next?
+
+| File | Query | Business question |
+|---|---|---|
+| [`q6_1.sql`](queries/unit6/q6_1.sql) | Q1 | Is a rating unusually high or low for its own movie? (`AVG OVER PARTITION BY`, vs. `GROUP BY`) |
+| | Q1 supporting | Do the unusual ratings come from people who watched? How much do they move each average? |
+| | Q2 | Where would each movie sit on a "most rated" leaderboard, and how are ties treated? (`ROW_NUMBER`, `RANK`, `DENSE_RANK`) |
+| | Q3 | Which quarter of the catalog is each movie in, and are any ties split? (`NTILE`) |
+| [`q6_2.sql`](queries/unit6/q6_2.sql) | Part A | Is movie 11's score rising or falling, rating by rating? (`LAG`, `LEAD`) |
+| | Part B | How many ratings have been lost so far, what is the recent failure rate, and did Q4 hit its target? (running total, moving average) |
+| | Part C | When did a movie stop receiving ratings, and was the data lost? (gap detection) |
+| [`q6_3.sql`](queries/unit6/q6_3.sql) | Part A | Which three reviews should each movie page feature? (top-N per group, `FIRST_VALUE`, `LAST_VALUE`) |
+| | Part B | Is the platform better or worse each month and each quarter? (`LAG`, `NULLIF`, missing-month check) |
+
+Written analysis for each unit is in [`/analysis`](analysis), and each unit's
+memo to leadership is in `analysis/unitN-finding.md`.
+
+---
+
+## 4. Technical highlights
+
+**1. Three-valued logic: finding 166 rows that vanished without an error**
+*(Unit 3, [`q3_2.sql`](queries/unit3/q3_2.sql))*
+The dashboard filtered `WHERE withdrawn_reason <> 'Spam detected'`. For a NULL
+reason, that comparison is UNKNOWN, not TRUE, so every ordinary rating was
+dropped with no warning. I proved it by showing the two "opposite" filters
+summed to 34, not 200, then fixed it with an explicit `OR withdrawn_reason IS
+NULL`. The same logic explains why `NOT IN` returns nothing when its list
+contains a NULL (`q3_3.sql`, C2). **Why it mattered:** it was the difference
+between paying 12 reviewers and paying all 30.
+
+**2. Conditional aggregation and `ROLLUP`: one pass, every level**
+*(Unit 4, [`q4_2.sql`](queries/unit4/q4_2.sql))*
+`SUM(CASE WHEN rating_status = 'withdrawn' THEN 1 ELSE 0 END)` counts totals and
+failures in a single scan, and `GROUP BY ROLLUP (device_country, movie_id)`
+with `HAVING GROUPING(movie_id) = 1` returns regional subtotals and the platform
+total together. A two-step CTE then built a fair baseline (16.5%) from only the
+movies with enough ratings to judge. **Why it mattered:** the regional totals
+add up exactly to the platform's figure, so nothing is double-counted or
+missing.
+
+**3. Outer joins and anti-joins: seeing what isn't there**
+*(Unit 5, [`q5_2.sql`](queries/unit5/q5_2.sql))*
+An inner join from `movies` to `ratings` returns 13 movies; a left join returns
+15. I counted `DISTINCT movie_id` rather than rows (202 vs 200 hides that two
+whole movies are missing), and confirmed the answer two ways, `NOT EXISTS` and
+`EXCEPT`. **Why it mattered:** movies 14 and 15 had never been rated, and no
+report built on an inner join would ever have shown it.
+
+**4. Reading execution plans instead of assuming them**
+*(Unit 5, [`q5_3.sql`](queries/unit5/q5_3.sql); Unit 6, [`q6_1.sql`](queries/unit6/q6_1.sql))*
+The three-table join used a Hash Join for users and a Nested Loop with Memoize
+for movies (187 of 200 lookups were cache hits), because two tables had never
+been analyzed and the planner guessed 100 users instead of 30. After `ANALYZE`
+the same query switched to two Hash Joins. The Unit 6 window query shows a
+Seq Scan → Sort on the `PARTITION BY` key → WindowAgg, returning all 200 rows.
+**Why it mattered:** the algorithm depends on what the planner knows, and the
+plan shows which index or statistics a slow report actually needs.
+
+**5. Window functions: context without losing detail**
+*(Unit 6, [`q6_1.sql`](queries/unit6/q6_1.sql), [`q6_2.sql`](queries/unit6/q6_2.sql), [`q6_3.sql`](queries/unit6/q6_3.sql))*
+`AVG(score) FILTER (WHERE rating_status <> 'withdrawn') OVER (PARTITION BY
+movie_id)` puts each movie's true average on every rating, which is how the
+short-watch pattern was found. `LAG(rated_at)` in a CTE, filtered outside it,
+found movie 11's 136-day gap. The top-3 query breaks ties with a stated rule
+(score, then watch time, then date) instead of leaving them to `ROW_NUMBER`'s
+arbitrary order. The monthly trend runs `LAG` over a `generate_series` calendar,
+so a missing month can't make it compare the wrong months. **Why it mattered:**
+each of these questions compares a row with its group or its neighbours, which
+`GROUP BY` alone cannot do.
+
+---
+
+## 5. Findings and recommendations
+
+**1. The dashboard was wrong, and the true failure rate is 17%.**
+Its filter silently excluded every rating with a blank withdrawal reason (Unit
+3), and the 0.5 placeholder on withdrawn ratings was being counted as a real
+score (Unit 4). Corrected: 34 of 200 ratings withdrawn, and an average score of
+3.33, not 2.85.
+→ *Every rule on `withdrawn_reason` must state what a blank means, and every
+score average must exclude withdrawn ratings.*
+
+**2. The rate improved once and then stalled, and one movie drives the worst
+months.**
+The failure rate fell from 22.6% in Q1 to about 15% and stayed there through Q4.
+March (27.3%) and June (25.0%) were the worst months, and 4 of their 8
+withdrawals were on movie 11, which also went 136 days without a rating that
+stayed on its page (Units 4–6).
+→ *Trust & Safety finishes a targeted review of movies 11, 9 and 2. Analytics
+replaces the dashboard figure with a monthly report that uses quarterly and
+rolling rates and agreed triggers for action.*
+
+**3. A third of the ratings we keep come from people who barely watched.**
+55 of the 166 kept ratings came from viewers who watched under 10 minutes. They
+average 1.73 against 4.12 for everyone else, they pull the platform average
+from 4.12 to 3.33, and they caused 12 of the 13 sharpest score drops. Their share
+was the highest of the year in Q4 (43.9%).
+→ *Product tests a minimum-watch rule for one quarter (labelling, holding out
+or down-weighting short-watch ratings) without deleting any, then decides.*
+
+Full reasoning, owners and targets: [`analysis/unit6-finding.md`](analysis/unit6-finding.md).
+
+---
+
+## 6. Limitations and future improvements
+
+**The platform records viewing only when someone leaves a rating.** There is no
+table of plays or sessions, so `watch_minutes` exists only on rating rows, and
+nothing records how long each movie is. That one gap limits three conclusions:
+
+- A movie with no ratings (14 and 15) cannot be told apart from one that is
+  watched but never rated, or one that will not play.
+- A quiet spell, like movie 11's 89 days with no ratings, could be a real lull
+  or a period when the movie was hard to reach.
+- A 4-minute rating could be careless, or honest feedback from someone who quit
+  because they disliked the movie. "10 minutes" is a fixed cut-off, not a share
+  of the runtime.
+
+**What would address it:** a `viewing_sessions` table (user, movie, start and
+end time, completed or not) and a `runtime_minutes` column on `movies`. With
+them, short-watch ratings could be judged as a share of the movie, unrated
+titles could be split into "unwatched" and "watched but unrated", and gaps
+could be checked against actual viewing. A second year of data would also be
+needed to tell whether the March and June spikes are seasonal.
+
+---
+
+## 7. Video presentation
+
+🎥 **[Watch the video walkthrough](https://drive.google.com/file/d/1OP1Wh8D8b1Lem8Af5QM9u3G7T0CVoc4X/view?usp=sharing)**: the business question,
+three queries shown running, the key findings, and one limitation.
+
+---
+
+## 8. How to run it
+
+**You need:** PostgreSQL 14 or later, with `createdb` and `psql` on your path.
+Nothing else.
+
+```bash
+# 1. Get the code
+git clone https://github.com/haqueau/ex603-movie-database.git
+cd ex603-movie-database
+
+# 2. Create the database and load the schema and data
+createdb ex603_data
+psql -d ex603_data -f schema/movies.sql
+
+# 3. Run any query file (-e prints each query above its result)
+psql -d ex603_data -P pager=off -e -f queries/unit6/q6_1.sql
+```
+
+`movies.sql` drops its tables before creating them, so it can be re-run
+safely. Every query file is read-only. One query fails on purpose:
+`q3_2.sql` B1 reproduces the alias error from Unit 3, and `psql` reports it and
+carries on with the rest of the file.
+
+---
 
 ## Repository structure
 
-- `/schema` — DDL script, ERD image, and constraint justifications
-- `/queries` — the Unit 3 `.sql` files (`q3_1`–`q3_3`), plus one subfolder per later unit (`unit4`, …) holding that assignment's queries
-- `/analysis` — written notes and reflections, one markdown file per unit
-- `/screenshots` — execution evidence, named to map to the task it supports
-
-## Building the database
-
-Requires PostgreSQL 14 or later.
-
 ```
-createdb ex603
-psql -d ex603 -f schema/schema.sql
-```
-
-The script can be run repeatedly. Its reset block drops the tables in
-reverse dependency order before recreating them, so a second run succeeds
-exactly like the first.
-
-### The analysis dataset (Units 3 onward)
-
-From Unit 3, every query runs against the course's provided dataset rather
-than the Unit 2 schema. It uses the appendix table names (`movies`,
-`movie_genres`) and holds 30 users, 15 movies and 200 ratings.
-
-```
-createdb ex603_data
-psql -d ex603_data -f movies.sql
+.
+├── README.md
+├── schema/
+│   ├── movies.sql            # Unit 3 provided DDL + data (used by all queries)
+│   ├── schema.sql            # Unit 2: my own schema design
+│   ├── MovieERDNew.png       # Unit 2: ERD of that design (MovieERDold.png = first draft)
+│   ├── schema-definition.md  # Unit 2: table definitions
+│   └── constraints.md        # Unit 2: why each constraint exists
+├── queries/
+│   ├── unit3/  q3_1.sql  q3_2.sql  q3_3.sql
+│   ├── unit4/  q4_1.sql  q4_2.sql
+│   ├── unit5/  q5_1.sql  q5_2.sql  q5_3.sql
+│   └── unit6/  q6_1.sql  q6_2.sql  q6_3.sql
+├── analysis/
+│   ├── unit1.md … unit6.md           # write-ups per unit
+│   └── unit3-finding.md … unit6-finding.md   # memos to leadership
+└── screenshots/              # every query run with its output, named by task
+    ├── 3_*.pdf, 4_*.pdf, 5_3_*.pdf   # Units 3–5
+    ├── unit5/                        # Unit 5, Tasks 5.1–5.2
+    └── unit6/                        # Unit 6
 ```
 
-Each query file then runs unchanged, for example:
-
-```
-psql -d ex603_data -P pager=off -e -f queries/unit4/q4_1.sql
-```
-
-`-e` prints each query above its result, and `-P pager=off` prints long
-results in full.
-
-## Query catalogue
-
-Every query file starts with a header recording what its queries found. In
-Unit 4, a **failure** is a withdrawn rating (`rating_status = 'withdrawn'`) and
-a **region** is the country a rating was made from (`ratings.device_country`).
-
-### Unit 3: Establish what the data contains
-
-| File | Query | Business question it answers |
-|---|---|---|
-| `queries/q3_1.sql` | 3.1a | Which available movies were released after 2015? |
-| | 3.1b | What statuses can a rating have, and how many ratings carry each? |
-| | 3.1c | Which ratings score 4.0–5.0, and which are withdrawn or flagged? |
-| | 3.1d | Which titles match a name pattern, and which ratings have no withdrawal reason? |
-| | 3.1e | How would each rating read to someone who doesn't write SQL? |
-| `queries/q3_2.sql` | A1–A5 | Why did the dashboard credit only 12 of 30 reviewers, and what are the correct counts? |
-| | B1–B3 | Why can't a SELECT alias be used in WHERE, and what are the two ways around it? |
-| `queries/q3_3.sql` | Forms 1–3 | Which reviewers have never had a rating withdrawn as spam? |
-| | C1–C2 | Do the three forms return identical rows, and when does NOT IN break? |
-
-### Unit 4: From rows to insight
-
-| File | Query | Business question it answers |
-|---|---|---|
-| `queries/unit4/q4_1.sql` | Q1 | How many ratings are there, what do they total, what is a typical score, and how many reviewers wrote them? |
-| | Q1 follow-up | Where does the lowest score come from? (Every withdrawn rating carries a 0.5 placeholder.) |
-| | Q2 | Which movies get rated most, and how well? |
-| | Q3 | Which movies have enough ratings (10+) for their failure rate to be worth acting on? |
-| | Q4 | For each region, how did each movie do there? |
-| `queries/unit4/q4_2.sql` | Part A | For each movie, how many ratings did it get, and how many were withdrawn? (one pass) |
-| | Part B | What is each region's failure rate, and what is the platform's overall? (ROLLUP subtotals and grand total) |
-| | Part C1 | What failure rate is normal for a movie with enough ratings to judge? |
-| | Part C2 | Which high-volume movies are well above that normal rate? |
-
-Write-ups: `analysis/unit4.md` (Tasks 4.1 and 4.2, and the reflection) and
-`analysis/unit4-finding.md` (the breakdown for leadership).
-
-## Schema
-
-The implemented schema names the producer table `titles` and the junction
-`title_genres`, rather than `movies` and `movie_genres`, because the table
-holds both films and series, distinguished by `content_type`.
-
-| Table | Role | What it holds |
-|---|---|---|
-| `users` | actor | Registered accounts, each with a unique username and email |
-| `titles` | producer | Films and series in one table, distinguished by `content_type` |
-| `genres` | catalog | The controlled list of genres, arranged as a hierarchy of parents and subgenres |
-| `title_genres` | junction | Which titles belong to which genres (many-to-many) |
-| `ratings` | event | One star rating per user per title, with an optional written review |
-
-Tables are created in dependency order: `users`, `genres`, `titles`,
-`title_genres`, `ratings`. The diagram is in `schema/erd.png`
-(source: `schema/erd.drawio`).
-
-### Design decisions worth noticing
-
-- **Films and series share one table.** `content_type` distinguishes them.
-  `runtime_min` is nullable because series have no single runtime, and
-  `chk_titles_film_has_runtime` restores the rule that every film has one.
-- **One rating per user per title.** `ratings` uses a surrogate key, and
-  `uq_ratings_user_title` enforces the uniqueness a composite key would have
-  given, so no user can rate a title twice and skew its average.
-- **Scores are whole stars.** `score` is `SMALLINT` bounded to 1–5 by
-  `chk_ratings_score`, not the fractional `NUMERIC(3,2)`.
-- **Average scores are not stored.** They are computed at query time with
-  `AVG(score)`, so they are never stale after a new rating or a deleted
-  account.
-- **Genres form a hierarchy.** `parent_genre_id` is a recursive foreign key
-  (Romantic Comedy → Comedy). Deleting a parent sets its subgenres' parent to
-  null rather than deleting them.
-- **Deletes are deliberate, not uniform.** Removing a user or a title
-  cascades to the ratings and genre links that depend on it, but deleting a
-  genre still attached to any title is refused (`RESTRICT`), so
-  classification is never lost silently. The reasoning for every choice is
-  in `analysis/unit2.md`.
-- **Every constraint is named** with a `pk_`, `uq_`, `chk_` or `fk_` prefix,
-  so an error message identifies the rule that was broken.
-
-## Screenshots
-
-### Unit 2
+**Execution evidence for Unit 6** (in [`/screenshots/unit6`](screenshots/unit6)):
 
 | File | Shows |
 |---|---|
-| `screenshots/First_run.pdf` | First run of `schema/schema.sql` via `psql`: the reset block drops any existing tables, then all five tables are created in dependency order |
-| `screenshots/Second_run.pdf` | Second consecutive run with no manual cleanup; identical output, showing the script is re-runnable |
-| `screenshots/Table_list.pdf` | `\dt` listing all five tables, confirming the schema was created |
-
-### Unit 3
-
-| File | Shows |
-|---|---|
-| `screenshots/3_1a_available_movies.pdf` | 3.1a: available movies released after 2015 |
-| `screenshots/3_1b_distinct_statuses.pdf` | 3.1b: the distinct rating statuses and their counts |
-| `screenshots/3_1c_score_range.pdf` | 3.1c: ratings scoring 4.0–5.0 (BETWEEN) |
-| `screenshots/3_1c_status_in_list.pdf` | 3.1c: withdrawn and flagged ratings (IN) |
-| `screenshots/3_1d_like_titles.pdf` | 3.1d: titles matched with LIKE |
-| `screenshots/3_1d_null_coalesce.pdf` | 3.1d: NULL withdrawal reasons, labelled with COALESCE |
-| `screenshots/3_1e_score_labels.pdf` | 3.1e: CASE labels for non-SQL readers |
-| `screenshots/3_2a_counts_dont_sum.pdf` | A3: the two filters fail to cover all 200 rows |
-| `screenshots/3_2a_repaired.pdf` | A4: the repaired not-spam count |
-| `screenshots/3_2a_reviewer_impact.pdf` | A5: broken vs repaired credit per reviewer |
-| `screenshots/3_2b_alias_error.pdf` | B1: the alias-in-WHERE error |
-| `screenshots/3_2b_rewrite_repeat.pdf` | B2: rewrite by repeating the expression |
-| `screenshots/3_2b_rewrite_cte.pdf` | B3: rewrite with a CTE |
-| `screenshots/3_3_form1_not_in.pdf` | Form 1: NOT IN subquery |
-| `screenshots/3_3_form2_cte.pdf` | Form 2: CTE with LEFT JOIN |
-| `screenshots/3_3_form3_except.pdf` | Form 3: EXCEPT |
-| `screenshots/3_3_identity_proof.pdf` | C1: proof the three forms return identical rows |
-| `screenshots/3_3_null_breaks_not_in.pdf` | C2: a NULL makes NOT IN return nothing |
-
-### Unit 4
-
-| File | Shows |
-|---|---|
-| `screenshots/4_1_q1_q2_baseline_per_movie.pdf` | `q4_1.sql` Q1 baseline, the Q1 placeholder check, and Q2 per-movie counts and averages |
-| `screenshots/4_1_q3_having.pdf` | `q4_1.sql` Q3: movies with 10+ ratings (HAVING) and their failure rates |
-| `screenshots/4_1_q4_region_movie.pdf` | `q4_1.sql` Q4: all 62 region × movie rows |
-| `screenshots/4_2_a_b_conditional_aggregation_rollup.pdf` | `q4_2.sql` Part A (one-pass totals and failures per movie) and Part B (ROLLUP: five `Regional subtotal` rows, then the `GRAND TOTAL` row) |
-| `screenshots/4_2_c1_baseline.pdf` | `q4_2.sql` Part C1: the 16.5% high-volume baseline |
-| `screenshots/4_2_c2_vs_baseline.pdf` | `q4_2.sql` Part C2: each high-volume movie compared with the baseline |
+| [`6_1_partition_avg_ranking_ntile.pdf`](screenshots/unit6/6_1_partition_avg_ranking_ntile.pdf) | Full run of `q6_1.sql`, including the EXPLAIN plan and the **ranking tie**: movies 5 and 7 both rank 4 under `RANK`, 4 and 5 under `ROW_NUMBER` |
+| [`6_2_lag_lead_running_total_gaps.pdf`](screenshots/unit6/6_2_lag_lead_running_total_gaps.pdf) | Full run of `q6_2.sql` |
+| [`6_3_top3_per_movie_month_over_month.pdf`](screenshots/unit6/6_3_top3_per_movie_month_over_month.pdf) | Full run of `q6_3.sql`, including the **top 3 per movie** output (39 rows) |
